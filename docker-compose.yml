@@ -1,0 +1,8 @@
+services:
+  bot:
+    build: ./worker
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      # Put an optional cookies.txt here and set COOKIES_FILE=/data/cookies.txt
+      - ./data:/data
