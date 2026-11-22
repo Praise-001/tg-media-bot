@@ -1,12 +1,36 @@
 """Settings, read from environment variables (or a local .env file)."""
 from __future__ import annotations
 
+import base64
+import binascii
 import os
+import tempfile
 from dataclasses import dataclass
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+def _cookies_from_env() -> str | None:
+    """COOKIES_B64 = base64 of a Netscape cookies.txt. For hosts (like Vercel) with no
+    place to put a file: it is decoded into a private temp file at startup."""
+    raw = os.getenv("COOKIES_B64", "").strip()
+    if not raw:
+        return None
+    try:
+        data = base64.b64decode(raw)
+    except (binascii.Error, ValueError):
+        print("[warn] COOKIES_B64 is not valid base64; continuing without cookies.")
+        return None
+    if b"\t" not in data:
+        print("[warn] COOKIES_B64 doesn't look like a cookies.txt file; continuing without cookies.")
+        return None
+    path = os.path.join(tempfile.gettempdir(), "bot_cookies.txt")
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(data)
+    return path
 
 
 def _int_set(name: str, raw: str) -> frozenset[int]:
@@ -57,6 +81,8 @@ def load_settings() -> Settings:
     if cookies and not os.path.isfile(cookies):
         print(f"[warn] COOKIES_FILE={cookies} not found; continuing without cookies.")
         cookies = None
+    if not cookies:
+        cookies = _cookies_from_env()
 
     return Settings(
         token=token,

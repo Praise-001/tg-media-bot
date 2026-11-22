@@ -40,6 +40,8 @@ SUPPORTED_DOMAINS = (
     "twitch.tv",
     "linkedin.com",
     "bsky.app",
+    "swisstransfer.com",
+    "vecteezy.com",
 )
 
 VIDEO_SEND_EXT = {".mp4", ".mov", ".m4v"}
@@ -93,6 +95,8 @@ PLATFORM_DOMAINS = {
     "Threads": ("threads.net", "threads.com"),
     "Pinterest": ("pinterest.com", "pin.it"),
     "Reddit": ("reddit.com", "redd.it"),
+    "SwissTransfer": ("swisstransfer.com",),
+    "Vecteezy": ("vecteezy.com",),
 }
 
 
@@ -209,7 +213,7 @@ def _ytdlp_download(url: str, outdir: Path, s: Settings, low_quality: bool) -> l
 
 
 async def _gallerydl_download(url: str, outdir: Path, s: Settings) -> list[MediaItem]:
-    cmd = [sys.executable, "-m", "gallery_dl", "-q", "-D", str(outdir), "--range", "1-10"]
+    cmd = [sys.executable, "-m", "gallery_dl", "-D", str(outdir), "--range", "1-10"]
     if s.cookies_file:
         cmd += ["--cookies", s.cookies_file]
     cmd.append(url)
@@ -221,9 +225,11 @@ async def _gallerydl_download(url: str, outdir: Path, s: Settings) -> list[Media
     except asyncio.TimeoutError:
         proc.kill()
         raise DownloadError("The download took too long.")
-    if proc.returncode not in (0, None):
-        log.info("gallery-dl failed: %s", err.decode(errors="ignore")[-300:])
-    return _collect(outdir, {})
+    items = _collect(outdir, {})
+    if not items:  # say why, so a failure can be diagnosed from the logs
+        detail = err.decode(errors="ignore").strip()[-400:] or "no output"
+        log.info("gallery-dl got nothing for %s (exit code %s): %s", url, proc.returncode, detail)
+    return items
 
 
 # ---------------------------------------------------------------------- public API
@@ -241,6 +247,11 @@ def _oversize(items: list[MediaItem], s: Settings) -> bool:
 
 async def fetch_media(url: str, outdir: Path, s: Settings) -> list[MediaItem]:
     """Download everything attached to a link. Raises DownloadError on failure."""
+    if platform_of(url) == "SwissTransfer":  # not supported by yt-dlp; has its own downloader
+        from .swisstransfer import fetch_swisstransfer
+
+        return await fetch_swisstransfer(url, outdir, s)
+
     last_error: Exception | None = None
 
     # 1) yt-dlp: normal quality, then a smaller-quality retry if the file is too big.
@@ -278,6 +289,7 @@ async def fetch_media(url: str, outdir: Path, s: Settings) -> list[MediaItem]:
         return items
 
     msg = str(last_error) if last_error else ""
+    log.warning("no media for %s (yt-dlp: %s)", url, msg[:200] or "found nothing")
     if "login" in msg.lower() or "cookies" in msg.lower() or "private" in msg.lower():
         raise DownloadError(
             "That post needs a login (private, age-restricted, or the site is blocking the server)."

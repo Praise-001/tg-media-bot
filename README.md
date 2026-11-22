@@ -84,6 +84,18 @@ Railway, Render, Fly.io and similar hosts: deploy from the repo using `worker/Do
 | `AUTO_UPDATE` | 1 | Update yt-dlp/gallery-dl on each container start |
 | `TELEGRAM_API_URL` | empty | Local Bot API server URL (files up to 2000 MB) |
 
+## SwissTransfer and Vecteezy
+
+**SwissTransfer** (`swisstransfer.com/d/...` links): the bot has its own downloader for these (`worker/app/swisstransfer.py`), because yt-dlp doesn't support the site.
+- Photos and videos are sent as photos/videos, everything else (zip, pdf, ...) as documents. A transfer with several files sends up to 10 of them.
+- **Telegram's 50 MB bot limit applies.** Files above `MAX_FILE_MB` are skipped, and if nothing fits the bot says how big the transfer is. SwissTransfer is normally used for big files, so for larger ones run a local Telegram Bot API server and set `TELEGRAM_API_URL` and `MAX_FILE_MB` (up to 2000).
+- Password-protected transfers, expired links and used-up download limits give a clear message instead of a download.
+- SwissTransfer has no official public API. This uses the same requests as an open-source client, so if SwissTransfer changes its site, this is the one file to update. The tests run against a fake server, so they can't catch that.
+
+**Vecteezy** (`vecteezy.com/video/...` links): the bot lets these through to the general downloader, which looks for a video on the page. This has not been tested against the live site.
+- Vecteezy has no download API, and its full-quality files are behind an account and a download button, so you may only get what the public page shows (often a preview).
+- Vecteezy's licence is personal: free files need attribution, Pro files need the downloader's own paid seat, and sharing or redistributing files isn't allowed. Check that your use of the bot fits those terms.
+
 ## Usage stats (`/stats`)
 
 The bot keeps a small SQLite file of who uses it and how much. Only the Telegram user IDs listed in `ADMIN_IDS` can read the report; anyone else gets no reply.
@@ -102,6 +114,10 @@ A person counts as a user when they send a link or message the bot privately. Ch
 ## Things worth knowing
 
 - **Instagram and Facebook are the usual troublemakers.** Many of their posts now require a logged-in session, and they often block datacenter IPs. If a link works on your laptop but not on the server, export cookies from a browser where you're logged in (a "Get cookies.txt" extension, Netscape format), save them as `data/cookies.txt`, and set `COOKIES_FILE=/data/cookies.txt`. Use a throwaway account, not your main one.
+  - **Instagram photo posts** (and carousels) are fetched by gallery-dl, which almost always needs this login. Videos usually work without it, which is why "videos work, images don't" is the typical symptom.
+  - **On Vercel there is no folder to put `cookies.txt` in.** Turn the file into text and put that in an environment variable instead: in PowerShell run `[Convert]::ToBase64String([IO.File]::ReadAllBytes("cookies.txt")) | Set-Clipboard`, then paste it as `COOKIES_B64` in Vercel (mark it Sensitive) and redeploy. Export only instagram.com's cookies so the value stays small.
+  - Cookies expire after a while; when photo posts start failing again, export a fresh file.
+  - To see why a link failed, search the logs for `no media for` and `gallery-dl got nothing`.
 - **Keep yt-dlp fresh.** Most "it suddenly stopped working" problems are fixed by a newer yt-dlp. With `AUTO_UPDATE=1`, just `docker compose restart`.
 - **50 MB limit.** Longer videos are retried at lower quality; if still too big, the bot says so. For bigger files, run a local Bot API server and set `TELEGRAM_API_URL` and `MAX_FILE_MB`.
 - **Groups:** add the bot to a group; it replies to links there and stays quiet on failures. If it doesn't see messages, disable privacy mode with @BotFather → `/setprivacy` → Disable.

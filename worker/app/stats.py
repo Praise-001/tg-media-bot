@@ -26,7 +26,7 @@ CREATE INDEX IF NOT EXISTS events_kind_ts ON events(kind, ts);
 """
 
 # Always shown in the report, in this order (even at 0).
-FIXED_PLATFORMS = ("Instagram", "TikTok", "YouTube")
+FIXED_PLATFORMS = ("Instagram", "TikTok", "YouTube", "SwissTransfer")
 
 
 @dataclass

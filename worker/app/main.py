@@ -57,7 +57,7 @@ class FileIdCache:
 WELCOME = (
     "👋 <b>Send me a link</b> and I'll send the video or photos back.\n\n"
     "Works with Instagram, TikTok, YouTube, Facebook, X/Twitter, Reddit, "
-    "Pinterest, Threads and more.\n"
+    "Pinterest, Threads, SwissTransfer and more.\n"
     "You can also add me to a group — I'll grab any link posted there."
 )
 
