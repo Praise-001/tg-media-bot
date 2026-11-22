@@ -84,6 +84,30 @@ def extract_urls(text: str, extra: list[str] | None = None) -> list[str]:
     return out
 
 
+PLATFORM_DOMAINS = {
+    "Instagram": ("instagram.com",),
+    "TikTok": ("tiktok.com",),
+    "YouTube": ("youtube.com", "youtu.be"),
+    "Facebook": ("facebook.com", "fb.watch", "fb.com"),
+    "X/Twitter": ("twitter.com", "x.com"),
+    "Threads": ("threads.net", "threads.com"),
+    "Pinterest": ("pinterest.com", "pin.it"),
+    "Reddit": ("reddit.com", "redd.it"),
+}
+
+
+def platform_of(url: str) -> str:
+    """Friendly site name for stats ('Other' if it isn't one we name)."""
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except ValueError:
+        return "Other"
+    for name, domains in PLATFORM_DOMAINS.items():
+        if any(host == d or host.endswith("." + d) for d in domains):
+            return name
+    return "Other"
+
+
 def is_supported(url: str, settings: Settings) -> bool:
     try:
         parsed = urlparse(url)

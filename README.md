@@ -84,6 +84,21 @@ Railway, Render, Fly.io and similar hosts: deploy from the repo using `worker/Do
 | `AUTO_UPDATE` | 1 | Update yt-dlp/gallery-dl on each container start |
 | `TELEGRAM_API_URL` | empty | Local Bot API server URL (files up to 2000 MB) |
 
+## Usage stats (`/stats`)
+
+The bot keeps a small SQLite file of who uses it and how much. Only the Telegram user IDs listed in `ADMIN_IDS` can read the report; anyone else gets no reply.
+
+1. Send `/id` to the bot to see your numeric Telegram user ID.
+2. Set `ADMIN_IDS=<that number>` (several admins: separate with commas) and restart or redeploy.
+3. Send `/stats`. You get: people who've used it, active today / last 7 days, posts delivered (and today), a count per site, failed requests, and `/start` presses. Days are UTC.
+
+Where the numbers are kept (`STATS_DB_PATH`):
+- **Docker / VPS:** `/data/stats.db`, stored in the `./data` folder, so counts survive restarts and rebuilds.
+- **Vercel Daemons:** storage there is temporary, so the counts reset whenever the bot restarts or you redeploy. Use a normal host, or add a hosted database, if you need long-term history.
+- **Local run:** `worker/data/stats.db`.
+
+A person counts as a user when they send a link or message the bot privately. Chatter in groups is not counted. Only the numeric user ID and the time of use are stored, not names or message text.
+
 ## Things worth knowing
 
 - **Instagram and Facebook are the usual troublemakers.** Many of their posts now require a logged-in session, and they often block datacenter IPs. If a link works on your laptop but not on the server, export cookies from a browser where you're logged in (a "Get cookies.txt" extension, Netscape format), save them as `data/cookies.txt`, and set `COOKIES_FILE=/data/cookies.txt`. Use a throwaway account, not your main one.

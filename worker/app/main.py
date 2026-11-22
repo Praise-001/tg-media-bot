@@ -18,7 +18,15 @@ from aiogram.utils.chat_action import ChatActionSender
 from aiogram.utils.media_group import MediaGroupBuilder
 
 from .config import Settings, load_settings
-from .downloader import DownloadError, MediaItem, extract_urls, fetch_media, is_supported
+from .downloader import (
+    DownloadError,
+    MediaItem,
+    extract_urls,
+    fetch_media,
+    is_supported,
+    platform_of,
+)
+from .stats import Stats, format_report
 
 log = logging.getLogger("bot")
 router = Router()
@@ -127,9 +135,62 @@ def _specs_from_cache(cached: list[Cached]) -> list[tuple]:
 # ---------------------------------------------------------------------- handlers
 
 
-@router.message(Command("start", "help"))
-async def cmd_start(message: Message) -> None:
+def _uid(message: Message) -> int | None:
+    return message.from_user.id if message.from_user else None
+
+
+# Stats must never get in the way of delivering media, so every write is guarded.
+async def _touch(stats: Stats, user_id: int | None) -> None:
+    if user_id is None:
+        return
+    try:
+        await asyncio.to_thread(stats.touch, user_id)
+    except Exception:
+        log.warning("stats write failed", exc_info=True)
+
+
+async def _track(
+    stats: Stats, kind: str, user_id: int | None, platform: str | None = None
+) -> None:
+    try:
+        await asyncio.to_thread(stats.record, kind, user_id, platform)
+    except Exception:
+        log.warning("stats write failed", exc_info=True)
+
+
+@router.message(Command("start"))
+async def cmd_start(message: Message, stats: Stats) -> None:
+    uid = _uid(message)
+    await _touch(stats, uid)
+    await _track(stats, "start", uid)
     await message.answer(WELCOME)
+
+
+@router.message(Command("help"))
+async def cmd_help(message: Message) -> None:
+    await message.answer(WELCOME)
+
+
+@router.message(Command("id"))
+async def cmd_id(message: Message) -> None:
+    uid = _uid(message)
+    if uid is not None:
+        await message.answer(f"Your Telegram user ID: <code>{uid}</code>")
+
+
+@router.message(Command("stats"))
+async def cmd_stats(message: Message, settings: Settings, stats: Stats) -> None:
+    uid = _uid(message)
+    if not settings.admin_ids:
+        await message.answer(
+            "Stats aren't set up yet. Add your Telegram user ID "
+            f"(<code>{uid}</code>) as <code>ADMIN_IDS</code> and restart the bot."
+        )
+        return
+    if uid not in settings.admin_ids:
+        return  # stay silent for everyone else
+    snap = await asyncio.to_thread(stats.snapshot)
+    await message.answer(format_report(snap))
 
 
 async def _handle_url(
@@ -138,15 +199,19 @@ async def _handle_url(
     settings: Settings,
     sem: asyncio.Semaphore,
     cache: FileIdCache,
+    stats: Stats,
 ) -> None:
     bot = message.bot
     private = message.chat.type == ChatType.PRIVATE
+    uid = _uid(message)
+    platform = platform_of(url)
 
     # 1) Instant path: we've sent this exact link before.
     cached = cache.get(url)
     if cached:
         try:
             await _send_all(message, _specs_from_cache(cached), from_cache=True)
+            await _track(stats, "delivered", uid, platform)
             return
         except Exception:  # stale file_id -> fall through to a fresh download
             log.warning("cached file_id failed for %s", url, exc_info=True)
@@ -162,19 +227,26 @@ async def _handle_url(
                     )
                     if sent:
                         cache.put(url, sent)
+            await _track(stats, "delivered", uid, platform)
         except DownloadError as e:
             log.info("download failed for %s: %s", url, e)
+            await _track(stats, "failed", uid, platform)
             if private:
                 await message.reply(f"⚠️ {e}")
         except Exception:
             log.exception("unexpected error for %s", url)
+            await _track(stats, "failed", uid, platform)
             if private:
                 await message.reply("⚠️ Something went wrong. Please try again in a moment.")
 
 
 @router.message(F.text | F.caption)
 async def on_message(
-    message: Message, settings: Settings, sem: asyncio.Semaphore, cache: FileIdCache
+    message: Message,
+    settings: Settings,
+    sem: asyncio.Semaphore,
+    cache: FileIdCache,
+    stats: Stats,
 ) -> None:
     if settings.allowed_users and (
         not message.from_user or message.from_user.id not in settings.allowed_users
@@ -186,6 +258,11 @@ async def on_message(
     hidden = [e.url for e in entities if e.type == "text_link" and e.url]
     urls = [u for u in extract_urls(text, hidden) if is_supported(u, settings)][:3]
 
+    # Count someone as a user when they send a link, or write to the bot privately
+    # (not for ordinary chatter in a group).
+    if urls or message.chat.type == ChatType.PRIVATE:
+        await _touch(stats, _uid(message))
+
     if not urls:
         if message.chat.type == ChatType.PRIVATE and not text.startswith("/"):
             await message.reply("Send me a link from Instagram, TikTok, YouTube, Facebook, X…")
@@ -196,7 +273,9 @@ async def on_message(
     except Exception:
         pass
 
-    await asyncio.gather(*(_handle_url(message, u, settings, sem, cache) for u in urls))
+    await asyncio.gather(
+        *(_handle_url(message, u, settings, sem, cache, stats) for u in urls)
+    )
 
 
 # -------------------------------------------------------------------------- main
@@ -217,10 +296,20 @@ async def main() -> None:
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
 
+    try:
+        stats = Stats(settings.stats_db_path)
+    except Exception:
+        log.exception(
+            "Can't open the stats file at %s; stats will be kept in memory only",
+            settings.stats_db_path,
+        )
+        stats = Stats(":memory:")
+
     dp = Dispatcher(
         settings=settings,
         sem=asyncio.Semaphore(settings.max_concurrent),
         cache=FileIdCache(settings.cache_size),
+        stats=stats,
     )
     dp.include_router(router)
 

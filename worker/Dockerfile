@@ -15,5 +15,7 @@ RUN chmod +x entrypoint.sh \
     && mkdir /data \
     && chown -R bot /app /data
 
+ENV STATS_DB_PATH=/data/stats.db
+
 USER bot
 ENTRYPOINT ["./entrypoint.sh"]
