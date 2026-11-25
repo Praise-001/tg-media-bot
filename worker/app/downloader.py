@@ -178,10 +178,36 @@ def _format_selector(max_mb: int, low_quality: bool) -> str:
     )
 
 
-def _ytdlp_download(url: str, outdir: Path, s: Settings, low_quality: bool) -> list[MediaItem]:
+# Used when a pre-merged file turns out to be silent: take the best picture AND the best
+# sound as separate streams and let ffmpeg join them.
+MERGE_SELECTOR = "bv*[height<=720]+ba/bv*+ba/b"
+
+
+def has_audio_stream(path: Path) -> bool | None:
+    """True/False from ffprobe, or None if it can't be checked (then we assume it's fine)."""
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries",
+             "stream=index", "-of", "csv=p=0", str(path)],
+            capture_output=True, text=True, timeout=15,
+        )
+    except Exception:
+        return None
+    if r.returncode != 0:
+        return None
+    return bool(r.stdout.strip())
+
+
+def _silent_videos(items: list["MediaItem"]) -> list["MediaItem"]:
+    return [i for i in items if i.kind == "video" and has_audio_stream(i.path) is False]
+
+
+def _ytdlp_download(
+    url: str, outdir: Path, s: Settings, low_quality: bool, fmt: str | None = None
+) -> list[MediaItem]:
     opts = {
         "outtmpl": str(outdir / "%(id)s_%(autonumber)s.%(ext)s"),
-        "format": _format_selector(s.max_file_mb, low_quality),
+        "format": fmt or _format_selector(s.max_file_mb, low_quality),
         "merge_output_format": "mp4",
         "noplaylist": True,
         "playlist_items": "1-10",  # carousels: first 10 items
@@ -209,6 +235,10 @@ def _ytdlp_download(url: str, outdir: Path, s: Settings, low_quality: bool) -> l
             fp = rd.get("filepath")
             if fp:
                 meta[Path(fp)] = entry
+                log.info(
+                    "yt-dlp picked format %s (vcodec=%s acodec=%s) for %s",
+                    rd.get("format_id"), rd.get("vcodec"), rd.get("acodec"), url,
+                )
     return _collect(outdir, meta)
 
 
@@ -284,7 +314,12 @@ async def fetch_audio(url: str, outdir: Path, s: Settings) -> list[MediaItem]:
             timeout=s.download_timeout,
         )
     except yt_dlp.utils.DownloadError as e:
-        log.info("yt-dlp audio failed for %s: %s", url, str(e)[:300])
+        log.warning("yt-dlp audio failed for %s: %s", url, str(e)[:400])
+        if "audio codec" in str(e) or "no audio" in str(e).lower():
+            raise DownloadError(
+                "That video has no sound track I can download. It may be silent, "
+                "or the site isn't giving the sound to the server."
+            )
         raise DownloadError("I couldn't get the audio from that link.")
     except asyncio.TimeoutError:
         raise DownloadError("The download took too long.")
@@ -329,6 +364,31 @@ def _oversize(items: list[MediaItem], s: Settings) -> bool:
     return any(i.path.stat().st_size > s.max_file_bytes for i in items)
 
 
+async def _ensure_sound(url: str, items: list[MediaItem], outdir: Path, s: Settings) -> list[MediaItem]:
+    """Some sites hand out a ready-made mp4 that has no sound. If a video has none, try once
+    more with separate picture + sound streams. If that doesn't help, send what we have."""
+    silent = _silent_videos(items)
+    if not silent:
+        return items
+    log.info("video for %s has no audio stream; retrying with separate audio", url)
+    retry_dir = outdir / "retry"
+    retry_dir.mkdir(exist_ok=True)
+    try:
+        new = await asyncio.wait_for(
+            asyncio.to_thread(_ytdlp_download, url, retry_dir, s, False, MERGE_SELECTOR),
+            timeout=s.download_timeout,
+        )
+    except Exception as e:  # keep the silent video rather than failing the request
+        log.info("retry with separate audio failed for %s: %s", url, str(e)[:300])
+        return items
+    if new and not _oversize(new, s) and not _silent_videos(new):
+        for i in items:  # swap in the version that has sound
+            i.path.unlink(missing_ok=True)
+        return new
+    log.warning("no audio track available for %s: the source itself seems to be silent", url)
+    return items
+
+
 async def fetch_media(url: str, outdir: Path, s: Settings) -> list[MediaItem]:
     """Download everything attached to a link. Raises DownloadError on failure."""
     if platform_of(url) == "SwissTransfer":  # not supported by yt-dlp; has its own downloader
@@ -352,7 +412,7 @@ async def fetch_media(url: str, outdir: Path, s: Settings) -> list[MediaItem]:
         except asyncio.TimeoutError:
             raise DownloadError("The download took too long.")
         if items and not _oversize(items, s):
-            return items
+            return await _ensure_sound(url, items, outdir, s)
         if items:  # downloaded but too large -> retry lower quality once
             _clear(outdir)
             if low:

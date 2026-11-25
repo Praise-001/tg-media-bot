@@ -500,3 +500,87 @@ def test_pick_with_garbage_data_is_harmless(tmp_path, monkeypatch):
     cb, *_ = _pick("x", m.LinkStore(), "nope", tmp_path)
     assert calls.video == 0 and calls.audio == 0
     assert "expired" in cb.answer.call_args.args[0]
+
+
+# ------------------------------------------------------------ silent sources
+
+
+def _make_clip(path, with_audio):
+    cmd = ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+           "testsrc=size=160x120:rate=10:duration=2"]
+    if with_audio:
+        cmd += ["-f", "lavfi", "-i", "sine=frequency=440:duration=2", "-shortest", "-c:a", "aac"]
+    cmd += ["-c:v", "libx264", "-pix_fmt", "yuv420p", str(path)]
+    subprocess.run(cmd, check=True)
+    return path
+
+
+@needs_ffmpeg
+def test_has_audio_stream(tmp_path):
+    assert dl.has_audio_stream(_make_clip(tmp_path / "a.mp4", True)) is True
+    assert dl.has_audio_stream(_make_clip(tmp_path / "s.mp4", False)) is False
+    assert dl.has_audio_stream(tmp_path / "missing.mp4") is None  # can't tell -> assume fine
+
+
+@needs_ffmpeg
+def test_audio_from_a_silent_video_explains_why(tmp_path):
+    root = tmp_path / "www"
+    root.mkdir()
+    _make_clip(root / "silent.mp4", False)
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(root))
+    handler.log_message = lambda *a, **k: None
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        out = tmp_path / "out"
+        out.mkdir()
+        with pytest.raises(dl.DownloadError) as e:
+            asyncio.run(dl.fetch_audio(f"http://127.0.0.1:{srv.server_address[1]}/silent.mp4", out, _cfg()))
+    finally:
+        srv.shutdown()
+    assert "no sound" in str(e.value)
+
+
+def _fake_download(tmp_path, first_has_audio, retry_has_audio):
+    """Stand-in for yt-dlp: the first call yields one clip, the 'retry' call another."""
+    seen = []
+
+    def fake(url, outdir, s, low, fmt=None):
+        seen.append(fmt)
+        has = retry_has_audio if fmt else first_has_audio
+        return [dl.MediaItem(_make_clip(outdir / "v.mp4", has), "video")]
+
+    return fake, seen
+
+
+@needs_ffmpeg
+def test_silent_video_is_retried_with_separate_audio(tmp_path, monkeypatch):
+    fake, seen = _fake_download(tmp_path, first_has_audio=False, retry_has_audio=True)
+    monkeypatch.setattr(dl, "_ytdlp_download", fake)
+    out = tmp_path / "o"
+    out.mkdir()
+    items = asyncio.run(dl.fetch_media("https://www.instagram.com/reel/x/", out, _cfg()))
+    assert seen == [None, dl.MERGE_SELECTOR]
+    assert len(items) == 1 and dl.has_audio_stream(items[0].path) is True
+    assert not (out / "v.mp4").exists()  # the silent copy is gone
+
+
+@needs_ffmpeg
+def test_video_with_sound_is_not_retried(tmp_path, monkeypatch):
+    fake, seen = _fake_download(tmp_path, first_has_audio=True, retry_has_audio=True)
+    monkeypatch.setattr(dl, "_ytdlp_download", fake)
+    out = tmp_path / "o"
+    out.mkdir()
+    asyncio.run(dl.fetch_media("https://www.instagram.com/reel/x/", out, _cfg()))
+    assert seen == [None]
+
+
+@needs_ffmpeg
+def test_truly_silent_source_still_delivers_the_video(tmp_path, monkeypatch):
+    fake, seen = _fake_download(tmp_path, first_has_audio=False, retry_has_audio=False)
+    monkeypatch.setattr(dl, "_ytdlp_download", fake)
+    out = tmp_path / "o"
+    out.mkdir()
+    items = asyncio.run(dl.fetch_media("https://www.instagram.com/reel/x/", out, _cfg()))
+    assert len(items) == 1 and items[0].path.exists()
+    assert seen == [None, dl.MERGE_SELECTOR]
