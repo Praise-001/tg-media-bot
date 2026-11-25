@@ -323,5 +323,7 @@ async def main() -> None:
 if __name__ == "__main__":
     try:
         asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
+    except KeyboardInterrupt:
         pass
+    # A SystemExit (e.g. "BOT_TOKEN is missing") is deliberately NOT caught here, so its
+    # message reaches the logs and the process exits with an error code.
