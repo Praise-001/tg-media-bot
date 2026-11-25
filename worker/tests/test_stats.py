@@ -63,6 +63,7 @@ def test_report_format():
     assert "Instagram: 97" in lines and "TikTok: 7" in lines and "YouTube: 0" in lines
     assert "Facebook: 1" in lines  # other platforms appear when used
     assert "Failed requests: 14 (today: 0)" in lines
+    assert "Audio requests: 0" in lines
     assert "/start presses: 9" in lines
 
 

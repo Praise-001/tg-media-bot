@@ -44,3 +44,13 @@ def test_cookie_file_wins_over_env_var(monkeypatch, tmp_path):
     f.write_text(COOKIES)
     _env(monkeypatch, COOKIES_FILE=str(f), COOKIES_B64=base64.b64encode(b"x\ty").decode())
     assert load_settings().cookies_file == str(f)
+
+
+def test_ask_format_defaults_on_and_can_be_turned_off(monkeypatch):
+    from app.config import load_settings
+
+    monkeypatch.setenv("BOT_TOKEN", "1:x")
+    monkeypatch.delenv("ASK_FORMAT", raising=False)
+    assert load_settings().ask_format is True
+    monkeypatch.setenv("ASK_FORMAT", "0")
+    assert load_settings().ask_format is False

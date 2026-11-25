@@ -64,6 +64,7 @@ class Settings:
     cache_size: int
     admin_ids: frozenset[int]  # who may use /stats; empty = stats disabled
     stats_db_path: str
+    ask_format: bool  # show the Video / Audio pop-up when a link is sent
 
     @property
     def max_file_bytes(self) -> int:
@@ -96,4 +97,5 @@ def load_settings() -> Settings:
         cache_size=int(os.getenv("CACHE_SIZE", "500")),
         admin_ids=_int_set("ADMIN_IDS", os.getenv("ADMIN_IDS", "")),
         stats_db_path=os.getenv("STATS_DB_PATH", "").strip() or "data/stats.db",
+        ask_format=_bool(os.getenv("ASK_FORMAT"), True),
     )

@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -62,10 +63,12 @@ class TooLargeError(DownloadError):
 @dataclass
 class MediaItem:
     path: Path
-    kind: str  # "video" | "photo" | "document"
+    kind: str  # "video" | "photo" | "document" | "audio"
     width: int | None = None
     height: int | None = None
     duration: int | None = None
+    title: str | None = None  # audio only
+    performer: str | None = None  # audio only
 
 
 # --------------------------------------------------------------------------- URLs
@@ -207,6 +210,87 @@ def _ytdlp_download(url: str, outdir: Path, s: Settings, low_quality: bool) -> l
             if fp:
                 meta[Path(fp)] = entry
     return _collect(outdir, meta)
+
+
+# ---------------------------------------------------------------------------- audio
+
+AUDIO_EXT = {".m4a", ".mp3"}  # the two formats Telegram accepts as "audio"
+
+
+def _audio_format_selector(max_mb: int) -> str:
+    # Prefer an m4a track as-is (no conversion = fast); otherwise take the best audio and convert.
+    m = max_mb
+    return f"ba[ext=m4a][filesize<?{m}M]/ba[filesize<?{m}M]/ba/b"
+
+
+def _probe_duration(path: Path) -> int | None:
+    """Length in whole seconds from the file itself (some sites don't report it). Best effort."""
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(path)],
+            capture_output=True, text=True, timeout=15,
+        ).stdout.strip()
+        return round(float(out)) if out else None
+    except Exception:
+        return None
+
+
+def _ytdlp_audio_download(url: str, outdir: Path, s: Settings) -> MediaItem:
+    opts = {
+        "outtmpl": str(outdir / "%(id)s.%(ext)s"),
+        "format": _audio_format_selector(s.max_file_mb),
+        "noplaylist": True,
+        "playlist_items": "1",
+        "quiet": True,
+        "no_warnings": True,
+        "noprogress": True,
+        "concurrent_fragment_downloads": 8,
+        "retries": 3,
+        "fragment_retries": 3,
+        "socket_timeout": 15,
+        "postprocessors": [
+            {"key": "FFmpegExtractAudio", "preferredcodec": "m4a", "preferredquality": "128"}
+        ],
+    }
+    if s.cookies_file:
+        opts["cookiefile"] = s.cookies_file
+
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+
+    entries = [e for e in ((info or {}).get("entries") or [info]) if e]
+    meta = entries[0] if entries else {}
+    files = sorted(p for p in outdir.iterdir() if p.is_file() and p.suffix.lower() in AUDIO_EXT)
+    if not files:
+        raise DownloadError("I couldn't get any audio from that link.")
+    title = (meta.get("track") or meta.get("title") or "").strip()
+    performer = (meta.get("artist") or meta.get("uploader") or meta.get("channel") or "").strip()
+    return MediaItem(
+        files[0],
+        "audio",
+        duration=int(meta["duration"]) if meta.get("duration") else _probe_duration(files[0]),
+        title=title[:64] or None,
+        performer=performer[:64] or None,
+    )
+
+
+async def fetch_audio(url: str, outdir: Path, s: Settings) -> list[MediaItem]:
+    """Download just the sound of a video link. Raises DownloadError on failure."""
+    if platform_of(url) == "SwissTransfer":
+        raise DownloadError("I can only pull audio out of video links, not SwissTransfer files.")
+    try:
+        item = await asyncio.wait_for(
+            asyncio.to_thread(_ytdlp_audio_download, url, outdir, s),
+            timeout=s.download_timeout,
+        )
+    except yt_dlp.utils.DownloadError as e:
+        log.info("yt-dlp audio failed for %s: %s", url, str(e)[:300])
+        raise DownloadError("I couldn't get the audio from that link.")
+    except asyncio.TimeoutError:
+        raise DownloadError("The download took too long.")
+    if item.path.stat().st_size > s.max_file_bytes:
+        raise TooLargeError(f"That audio is larger than Telegram's {s.max_file_mb} MB bot limit.")
+    return [item]
 
 
 # ---------------------------------------------------------------------- gallery-dl

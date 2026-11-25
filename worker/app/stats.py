@@ -39,6 +39,7 @@ class Snapshot:
     failed: int = 0
     failed_today: int = 0
     starts: int = 0
+    audio: int = 0
     by_platform: dict[str, int] = field(default_factory=dict)
 
 
@@ -101,6 +102,7 @@ class Stats:
                     "SELECT COUNT(*) FROM events WHERE kind = 'failed' AND ts >= ?", today
                 ),
                 starts=one("SELECT COUNT(*) FROM events WHERE kind = 'start'"),
+                audio=one("SELECT COUNT(*) FROM events WHERE kind = 'audio'"),
             )
             rows = self._db.execute(
                 "SELECT COALESCE(platform, 'Other'), COUNT(*) FROM events "
@@ -126,6 +128,7 @@ def format_report(s: Snapshot) -> str:
     )
     for name, count in others:
         lines.append(f"{name}: {count}")
+    lines.append(f"Audio requests: {s.audio}")
     lines.append(f"Failed requests: {s.failed} (today: {s.failed_today})")
     lines.append(f"/start presses: {s.starts}")
     return "\n".join(lines)

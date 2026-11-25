@@ -82,7 +82,21 @@ Railway, Render, Fly.io and similar hosts: deploy from the repo using `worker/Do
 | `ALLOWED_USER_IDS` | empty | Comma-separated user IDs; empty means everyone |
 | `COOKIES_FILE` | empty | Cookies for login-gated posts (see below) |
 | `AUTO_UPDATE` | 1 | Update yt-dlp/gallery-dl on each container start |
+| `ASK_FORMAT` | 1 | 1 = Video/Audio pop-up after each link; 0 = send video straight away |
 | `TELEGRAM_API_URL` | empty | Local Bot API server URL (files up to 2000 MB) |
+
+## Video or audio
+
+When someone sends a link, the bot replies with a small pop-up: **🎬 Video** or **🎵 Audio**. Nothing is downloaded until they tap one, then the bot sends that and removes the pop-up.
+- **Skip the question:** put `audio` or `mp3` in the message (`audio https://...` or `/audio https://...`) and the bot sends only the sound straight away, without downloading the video.
+- **Audio** comes as a playable track (title, uploader and length filled in), M4A or MP3, within the same 50 MB limit as video. Repeats are instant (cached).
+- **Several links in one message** get one pop-up each.
+- SwissTransfer links skip the pop-up, since files have no audio to extract; they are sent as before.
+- **Photo posts:** the pop-up can't know in advance whether a link is a video or photos. Tapping **Video** on a photo post sends the photos; tapping **Audio** on one says the audio couldn't be fetched.
+- Pop-ups are kept in memory, so after a restart or redeploy an old pop-up says "That button has expired. Please send the link again." Each pop-up works once.
+- In groups, a link also brings up the pop-up, and anyone in the group can tap it. Failed requests the person tapped for always get an error reply.
+- **Prefer instant videos?** Set `ASK_FORMAT=0`. The bot then sends the video straight away with an **Audio only** button under it (single videos only).
+- `/stats` has an **Audio requests** line. An audio request also counts in "Posts delivered".
 
 ## SwissTransfer and Vecteezy
 
@@ -132,8 +146,10 @@ worker/
   app/
     config.py       settings from env
     downloader.py   link detection, yt-dlp + gallery-dl
-    main.py         Telegram handlers, sending, file_id cache
-  tests/            URL parsing tests (pytest)
+    main.py         Telegram handlers, sending, file_id cache, audio button
+    stats.py        usage stats (SQLite)
+    swisstransfer.py SwissTransfer downloader
+  tests/            pytest suite (URLs, stats, SwissTransfer, audio, startup)
   Dockerfile, entrypoint.sh, requirements.txt
 ```
 
