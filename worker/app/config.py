@@ -65,6 +65,8 @@ class Settings:
     admin_ids: frozenset[int]  # who may use /stats; empty = stats disabled
     stats_db_path: str
     ask_format: bool  # show the Video / Audio pop-up when a link is sent
+    youtube_proxy: str | None = None  # proxy used for YouTube downloads only
+    pot_provider_url: str | None = None  # bgutil PO-token server, helps against YouTube's bot check
 
     @property
     def max_file_bytes(self) -> int:
@@ -98,4 +100,6 @@ def load_settings() -> Settings:
         admin_ids=_int_set("ADMIN_IDS", os.getenv("ADMIN_IDS", "")),
         stats_db_path=os.getenv("STATS_DB_PATH", "").strip() or "data/stats.db",
         ask_format=_bool(os.getenv("ASK_FORMAT"), True),
+        youtube_proxy=os.getenv("YOUTUBE_PROXY", "").strip() or None,
+        pot_provider_url=os.getenv("POT_PROVIDER_URL", "").strip() or None,
     )

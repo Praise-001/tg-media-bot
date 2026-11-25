@@ -167,11 +167,40 @@ def _collect(outdir: Path, meta_by_path: dict[Path, dict]) -> list[MediaItem]:
 # ------------------------------------------------------------------------- yt-dlp
 
 
-def _format_selector(max_mb: int, low_quality: bool) -> str:
+def _ytdlp_common(url: str, s: Settings) -> dict:
+    """Options every yt-dlp call shares: cookies, the YouTube extras, JS runtimes."""
+    opts: dict = {
+        # YouTube needs a JavaScript runtime to solve its player challenge. The Docker image
+        # ships Deno; Node works too if that's what the host has. Missing ones are ignored.
+        "js_runtimes": {"deno": {}, "node": {}},
+    }
+    if s.cookies_file:
+        opts["cookiefile"] = s.cookies_file
+    if platform_of(url) == "YouTube":
+        proxy = getattr(s, "youtube_proxy", None)
+        if proxy:
+            opts["proxy"] = proxy
+        pot = getattr(s, "pot_provider_url", None)
+        if pot:  # needs the bgutil plugin (in requirements.txt) and a running provider server
+            opts["extractor_args"] = {"youtubepot-bgutilhttp": {"base_url": [pot]}}
+    return opts
+
+
+def _format_selector(max_mb: int, low_quality: bool, platform: str = "") -> str:
     # Prefer a single pre-merged mp4 (no ffmpeg merge step = fastest).
     if low_quality:
         return "bv*[height<=480]+ba/b[height<=480]/w"
     m = max_mb
+    if platform == "YouTube":
+        # YouTube's ready-made mp4 is only 360p. Take 720p picture + sound and join them
+        # (a quick copy, no re-encoding); the per-stream size filter keeps it near the limit,
+        # and if it still comes out too big the caller retries at 480p.
+        v = max(m - 8, 5)
+        return (
+            f"bv*[height<=720][ext=mp4][filesize<?{v}M]+ba[ext=m4a]/"
+            f"b[ext=mp4][filesize<?{m}M]/b[filesize<?{m}M]/"
+            "bv*[height<=720]+ba/b"
+        )
     return (
         f"b[ext=mp4][filesize<?{m}M]/b[filesize<?{m}M]/"
         "bv*[height<=720][ext=mp4]+ba[ext=m4a]/bv*[height<=720]+ba/b"
@@ -207,10 +236,11 @@ def _ytdlp_download(
 ) -> list[MediaItem]:
     opts = {
         "outtmpl": str(outdir / "%(id)s_%(autonumber)s.%(ext)s"),
-        "format": fmt or _format_selector(s.max_file_mb, low_quality),
+        "format": fmt or _format_selector(s.max_file_mb, low_quality, platform_of(url)),
         "merge_output_format": "mp4",
         "noplaylist": True,
-        "playlist_items": "1-10",  # carousels: first 10 items
+        # carousels: first 10 items. A YouTube link is always one video.
+        "playlist_items": "1" if platform_of(url) == "YouTube" else "1-10",
         "quiet": True,
         "no_warnings": True,
         "noprogress": True,
@@ -220,8 +250,7 @@ def _ytdlp_download(
         "socket_timeout": 15,
         "writethumbnail": False,
     }
-    if s.cookies_file:
-        opts["cookiefile"] = s.cookies_file
+    opts.update(_ytdlp_common(url, s))
 
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=True)
@@ -282,8 +311,7 @@ def _ytdlp_audio_download(url: str, outdir: Path, s: Settings) -> MediaItem:
             {"key": "FFmpegExtractAudio", "preferredcodec": "m4a", "preferredquality": "128"}
         ],
     }
-    if s.cookies_file:
-        opts["cookiefile"] = s.cookies_file
+    opts.update(_ytdlp_common(url, s))
 
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=True)
@@ -315,6 +343,9 @@ async def fetch_audio(url: str, outdir: Path, s: Settings) -> list[MediaItem]:
         )
     except yt_dlp.utils.DownloadError as e:
         log.warning("yt-dlp audio failed for %s: %s", url, str(e)[:400])
+        reason = explain_error(str(e))
+        if reason:
+            raise DownloadError(reason)
         if "audio codec" in str(e) or "no audio" in str(e).lower():
             raise DownloadError(
                 "That video has no sound track I can download. It may be silent, "
@@ -362,6 +393,33 @@ def _clear(outdir: Path) -> None:
 
 def _oversize(items: list[MediaItem], s: Settings) -> bool:
     return any(i.path.stat().st_size > s.max_file_bytes for i in items)
+
+
+def explain_error(msg: str) -> str | None:
+    """A plain-language reason for the failures people actually hit, or None if unknown."""
+    low = msg.lower()
+    if "not a bot" in low:
+        log.warning(
+            "YouTube's bot check blocked this server. Fix: set YOUTUBE_PROXY, add YouTube "
+            "cookies (COOKIES_B64) or run a PO-token server (POT_PROVIDER_URL)."
+        )
+        return "YouTube is blocking the bot's server right now. Please try again later."
+    if "confirm your age" in low or "age-restricted" in low or "age restricted" in low:
+        return "That video is age-restricted, so I can't download it."
+    if "private video" in low:
+        return "That video is private."
+    if "members-only" in low or "members only" in low or "join this channel" in low:
+        return "That video is for channel members only."
+    if "live event" in low or "is live" in low or "live stream" in low:
+        return "I can't download live streams. Try again once it has ended."
+    if "video unavailable" in low or "this video is not available" in low or "has been removed" in low:
+        return "That video isn't available (removed, private, or blocked where the bot runs)."
+    if "requested format is not available" in low and "youtube" in low:
+        log.warning(
+            "YouTube gave no downloadable formats. Usually the JavaScript runtime (Deno) is "
+            "missing or yt-dlp is out of date."
+        )
+    return None
 
 
 async def _ensure_sound(url: str, items: list[MediaItem], outdir: Path, s: Settings) -> list[MediaItem]:
@@ -434,6 +492,9 @@ async def fetch_media(url: str, outdir: Path, s: Settings) -> list[MediaItem]:
 
     msg = str(last_error) if last_error else ""
     log.warning("no media for %s (yt-dlp: %s)", url, msg[:200] or "found nothing")
+    reason = explain_error(msg)
+    if reason:
+        raise DownloadError(reason)
     if "login" in msg.lower() or "cookies" in msg.lower() or "private" in msg.lower():
         raise DownloadError(
             "That post needs a login (private, age-restricted, or the site is blocking the server)."

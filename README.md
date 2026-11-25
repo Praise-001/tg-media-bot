@@ -82,6 +82,8 @@ Railway, Render, Fly.io and similar hosts: deploy from the repo using `worker/Do
 | `ALLOWED_USER_IDS` | empty | Comma-separated user IDs; empty means everyone |
 | `COOKIES_FILE` | empty | Cookies for login-gated posts (see below) |
 | `AUTO_UPDATE` | 1 | Update yt-dlp/gallery-dl on each container start |
+| `YOUTUBE_PROXY` | empty | Proxy used for YouTube downloads only |
+| `POT_PROVIDER_URL` | empty | URL of a bgutil PO-token server (YouTube bot check) |
 | `ASK_FORMAT` | 1 | 1 = Video/Audio pop-up after each link; 0 = send video straight away |
 | `TELEGRAM_API_URL` | empty | Local Bot API server URL (files up to 2000 MB) |
 
@@ -97,6 +99,21 @@ When someone sends a link, the bot replies with a small pop-up: **🎬 Video** o
 - In groups, a link also brings up the pop-up, and anyone in the group can tap it. Failed requests the person tapped for always get an error reply.
 - **Prefer instant videos?** Set `ASK_FORMAT=0`. The bot then sends the video straight away with an **Audio only** button under it (single videos only).
 - `/stats` has an **Audio requests** line. An audio request also counts in "Posts delivered".
+
+## YouTube
+
+YouTube links (watch, Shorts, youtu.be, music.youtube.com) work with the same flow as everything else: the Video / Audio pop-up, or `audio <link>` for just the sound. Video is sent in up to 720p, and audio is the sound track as M4A (fast, because YouTube serves it separately). Playlist links are ignored, and a link to one video inside a playlist sends just that video. Live streams can't be downloaded.
+
+YouTube is the hardest site to download from, so the bot has several layers. Start at the top and only add the next one if you need it:
+
+1. **Deno (already in the Docker image).** YouTube hides its video links behind a small JavaScript puzzle, and yt-dlp needs a JavaScript runtime to solve it. The `Dockerfile` installs Deno, and `AUTO_UPDATE=1` keeps yt-dlp current (YouTube changes often). If you run without Docker, install [Deno](https://deno.com) or Node 20+.
+2. **Cookies.** From datacenter hosts (Railway, Vercel, most VPSs) YouTube often answers "Sign in to confirm you're not a bot". Logged-in cookies usually fix it. Export YouTube's cookies from a **private/incognito window** where you're logged into a **throwaway Google account** (Netscape format, e.g. the "Get cookies.txt" extension, then close the window so YouTube doesn't rotate them). Put them in the same cookies file as Instagram's: paste the two exports into one text file, then turn it into `COOKIES_B64` as described below. Google may restrict an account that is used from a server, so never use your main account.
+3. **`YOUTUBE_PROXY`.** A residential or ISP proxy (`http://user:pass@host:port`) used for YouTube only; Instagram and everything else stay direct. This is the most reliable fix for IP blocking, but proxies cost money (usually billed per GB).
+4. **`POT_PROVIDER_URL`.** Address of a "PO token" server, which gives YouTube the proof-of-browser token it asks for. Run the `brainicism/bgutil-ytdlp-pot-provider` image as a second service (port 4416) and point this at it, e.g. `http://pot-provider.railway.internal:4416` on Railway. It helps with the token requirement but not with a blocked IP, so combine it with 2 or 3 if needed.
+
+What the user sees when YouTube refuses: "YouTube is blocking the bot's server right now" (bot check), or a specific message for age-restricted, private, members-only, unavailable and live videos. The logs say which fix to try: search for `bot check blocked` or `gave no downloadable formats`.
+
+Limits: the 50 MB Telegram limit still applies, so long videos are retried at 480p and then refused (use a local Bot API server for bigger files). I could not test against live YouTube from the build environment, only the settings, format choice and error handling.
 
 ## SwissTransfer and Vecteezy
 

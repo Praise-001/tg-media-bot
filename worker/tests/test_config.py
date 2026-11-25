@@ -54,3 +54,17 @@ def test_ask_format_defaults_on_and_can_be_turned_off(monkeypatch):
     assert load_settings().ask_format is True
     monkeypatch.setenv("ASK_FORMAT", "0")
     assert load_settings().ask_format is False
+
+
+def test_youtube_settings(monkeypatch):
+    from app.config import load_settings
+
+    monkeypatch.setenv("BOT_TOKEN", "1:x")
+    monkeypatch.delenv("YOUTUBE_PROXY", raising=False)
+    monkeypatch.delenv("POT_PROVIDER_URL", raising=False)
+    s = load_settings()
+    assert s.youtube_proxy is None and s.pot_provider_url is None
+    monkeypatch.setenv("YOUTUBE_PROXY", " http://u:p@host:1 ")
+    monkeypatch.setenv("POT_PROVIDER_URL", "http://pot:4416")
+    s = load_settings()
+    assert s.youtube_proxy == "http://u:p@host:1" and s.pot_provider_url == "http://pot:4416"
